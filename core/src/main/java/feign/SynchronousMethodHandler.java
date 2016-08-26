@@ -39,6 +39,7 @@ final class SynchronousMethodHandler implements MethodHandler {
   private final Client client;
   private final Retryer retryer;
   private final List<RequestInterceptor> requestInterceptors;
+  private final List<ResponseInterceptor> responseInterceptors;
   private final Logger logger;
   private final Logger.Level logLevel;
   private final RequestTemplate.Factory buildTemplateFromArgs;
@@ -48,7 +49,8 @@ final class SynchronousMethodHandler implements MethodHandler {
   private final boolean decode404;
 
   private SynchronousMethodHandler(Target<?> target, Client client, Retryer retryer,
-                                   List<RequestInterceptor> requestInterceptors, Logger logger,
+                                   List<RequestInterceptor> requestInterceptors,
+                                   List<ResponseInterceptor> responseInterceptors, Logger logger,
                                    Logger.Level logLevel, MethodMetadata metadata,
                                    RequestTemplate.Factory buildTemplateFromArgs, Options options,
                                    Decoder decoder, ErrorDecoder errorDecoder, boolean decode404) {
@@ -57,6 +59,8 @@ final class SynchronousMethodHandler implements MethodHandler {
     this.retryer = checkNotNull(retryer, "retryer for %s", target);
     this.requestInterceptors =
         checkNotNull(requestInterceptors, "requestInterceptors for %s", target);
+    this.responseInterceptors =
+            checkNotNull(responseInterceptors, "responseInterceptors for %s", target);
     this.logger = checkNotNull(logger, "logger for %s", target);
     this.logLevel = checkNotNull(logLevel, "logLevel for %s", target);
     this.metadata = checkNotNull(metadata, "metadata for %s", target);
@@ -113,6 +117,12 @@ final class SynchronousMethodHandler implements MethodHandler {
         // ensure the request is set. TODO: remove in Feign 10
         response.toBuilder().request(request).build();
       }
+      // Ensure the response body is disconnected
+      byte[] bodyData = Util.toByteArray(response.body().asInputStream());
+
+      // call response interceptors registered for this method handler
+      targetResponse(request, response, bodyData);
+
       if (Response.class == metadata.returnType()) {
         if (response.body() == null) {
           return response;
@@ -122,8 +132,6 @@ final class SynchronousMethodHandler implements MethodHandler {
           shouldClose = false;
           return response;
         }
-        // Ensure the response body is disconnected
-        byte[] bodyData = Util.toByteArray(response.body().asInputStream());
         return response.toBuilder().body(bodyData).build();
       }
       if (response.status() >= 200 && response.status() < 300) {
@@ -160,6 +168,12 @@ final class SynchronousMethodHandler implements MethodHandler {
     return target.apply(new RequestTemplate(template));
   }
 
+  void targetResponse(Request request, Response response, byte[] bodyData) {
+    for (ResponseInterceptor interceptor : responseInterceptors) {
+      interceptor.apply(request, response, bodyData, metadata);
+    }
+  }
+
   Object decode(Response response) throws Throwable {
     try {
       return decoder.decode(response, metadata.returnType());
@@ -175,15 +189,17 @@ final class SynchronousMethodHandler implements MethodHandler {
     private final Client client;
     private final Retryer retryer;
     private final List<RequestInterceptor> requestInterceptors;
+    private final List<ResponseInterceptor> responseInterceptors;
     private final Logger logger;
     private final Logger.Level logLevel;
     private final boolean decode404;
 
     Factory(Client client, Retryer retryer, List<RequestInterceptor> requestInterceptors,
-            Logger logger, Logger.Level logLevel, boolean decode404) {
+            List<ResponseInterceptor> responseInterceptors, Logger logger, Logger.Level logLevel, boolean decode404) {
       this.client = checkNotNull(client, "client");
       this.retryer = checkNotNull(retryer, "retryer");
       this.requestInterceptors = checkNotNull(requestInterceptors, "requestInterceptors");
+      this.responseInterceptors = checkNotNull(responseInterceptors, "responseInterceptors");
       this.logger = checkNotNull(logger, "logger");
       this.logLevel = checkNotNull(logLevel, "logLevel");
       this.decode404 = decode404;
@@ -192,7 +208,7 @@ final class SynchronousMethodHandler implements MethodHandler {
     public MethodHandler create(Target<?> target, MethodMetadata md,
                                 RequestTemplate.Factory buildTemplateFromArgs,
                                 Options options, Decoder decoder, ErrorDecoder errorDecoder) {
-      return new SynchronousMethodHandler(target, client, retryer, requestInterceptors, logger,
+      return new SynchronousMethodHandler(target, client, retryer, requestInterceptors, responseInterceptors, logger,
                                           logLevel, md, buildTemplateFromArgs, options, decoder,
                                           errorDecoder, decode404);
     }
